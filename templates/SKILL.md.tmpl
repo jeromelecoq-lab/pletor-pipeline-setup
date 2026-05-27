@@ -56,37 +56,35 @@ find "$CONFIG_PROJECT_DIR/Inputs/" -maxdepth 1 -type f \
   || { echo "Inputs/ is empty — drop assets in $CONFIG_PROJECT_DIR/Inputs/ first" >&2; exit 1; }
 ```
 
-### Phase 1 — Discover flow definitions (cached)
+### Phase 1 — Load flows.json (pre-discovered at scaffold time)
 
-If `${SKILL_DIR}/flows.json` is absent OR the user passes `--refresh-flows`, call MCP `get_workflow_definition` for **each** flow in `config.flows`. For each flow, identify:
-
-- The **single** unlocked `image_input` node (the asset input). REQUIRED.
-- The **single** unlocked `text_input` node intended for the Drive URL (heuristic: name contains `drive`, `url`, or `folder`). **OPTIONAL** — many flows don't have one. If none is found, that's fine; the flow simply doesn't write to Drive.
-- Every input marked `locked: true` (NEVER include in payloads).
-
-**Strict rules:**
-- If discovery doesn't yield exactly one image_input → call `AskUserQuestion` with the candidate list and let the user pick. Don't guess.
-- If discovery yields **multiple** matching text_input candidates for the Drive URL → ambiguous, call `AskUserQuestion` to pick one (or "none" if none of them is a drive URL input).
-- If **zero** Drive URL candidates → record `input_node_drive_url: null` and continue. The flow just doesn't use Drive.
-
-Write `flows.json` keyed by flow label. `input_node_drive_url` is nullable:
+`flows.json` was populated by the wizard during scaffold via MCP `get_workflow_definition` + role assignment per input. Its schema is **rich** :
 
 ```json
 {
-  "<label_0>": {
-    "flow_id": "...",
-    "input_node_image": "<uuid>",
-    "input_node_drive_url": "<uuid>" | null,
-    "locked_inputs": ["..."],
-    "discovered_at": "<ISO-8601>"
-  },
-  "<label_1>": { ... }
+  "<label>": {
+    "flow_id": "<uuid>",
+    "name": "<workflow name>",
+    "inputs": {
+      "<role>": {"id": "<uuid>", "node_type": "image_input | text_input | brand_system_input"}
+    },
+    "locked_inputs": [
+      {"id": "<uuid>", "label": "<name>", "node_type": "<type>"}
+    ],
+    "discovered_at": "<ISO-8601 UTC>"
+  }
 }
 ```
 
-**Consistency check at end of Phase 1**: if ANY flow has `input_node_drive_url != null` but `config.drive_root_id` is empty/null, STOP with a clear error:
+Common roles include: `winning_ad_template`, `packshot`, `reference_image`, `source_video`, `source_image`, `drive_url`, `products_names`, `target_languages`, `prompt`, `asset_name`. Always exclude `locked_inputs` from payloads.
 
-> Flow `<label>` expects a Google Drive URL input but `drive_root_id` is not set in config.json. Edit config.json to add your Drive folder ID (and `rclone_remote`) and re-run.
+**Runtime refresh** : if the user passes `--refresh-flows` OR `flows.json` is missing, call MCP `get_workflow_definition` for each flow in `config.flows` and re-prompt for role assignment (same UX as the wizard's Phase 4). Persist the new shape back to `flows.json`.
+
+**Consistency check after load**: if any flow has a `drive_url` role but `config.drive_root_id` is empty/null, STOP with :
+
+> Flow `<label>` declares a `drive_url` role input but `drive_root_id` is not set in config.json. Edit config.json to add your Drive folder ID (and `rclone_remote`) and re-run.
+
+If any flow has no `winning_ad_template`/`packshot`/`source_image` role (i.e. nothing that can carry an asset), STOP : the pipeline can't be driven by `Inputs/` assets.
 
 ### Phase 2 — Ask user: which steps to run + batch label
 
@@ -134,17 +132,42 @@ For each step `k` from 0 to (end_step inclusive):
 - Step 0: ALL uploaded assets from Phase 4 (variations = N, one per asset).
 - Step k > 0: the **first successful output** from step k-1, alphabetical by source asset name (variations = 1). Walk the previous step's `runs[]` accumulator, find the first entry with `status == "completed"`, use its `output_asset_id`. If none → STOP cleanly with a clear error, write partial manifest.
 
-**Build variations** — include `drive_url` ONLY if this step's flow has that input:
+**Build variations** — drive from the rich `flows[step.label].inputs` map (roles → UUIDs). Pick the **primary asset role** (priority: `packshot` > `source_image` > `winning_ad_template` > `reference_image` > whatever single `image_input` role exists). Each variation maps the primary asset to that role's UUID. Add `drive_url` if the flow declares it. Other text-input roles (`products_names`, `prompt`, `asset_name`) are populated per-strategy — by default, from the asset filename stem :
 
 ```python
-def build_variation(asset_id, step):
-    inputs = {flows[step.label].input_node_image: {"asset_ids": [asset_id]}}
-    if flows[step.label].input_node_drive_url:        # may be null
-        inputs[flows[step.label].input_node_drive_url] = drive_urls[step.label]
+def role_uuid(step, role):
+    return flows[step.label]["inputs"].get(role, {}).get("id")
+
+def build_variation(asset_id, asset_name, step):
+    inputs = {}
+
+    # Primary asset (priority-ordered fallback across known asset roles)
+    for r in ("packshot", "source_image", "winning_ad_template", "reference_image"):
+        uuid = role_uuid(step, r)
+        if uuid:
+            inputs[uuid] = {"asset_ids": [asset_id]}
+            break
+    if not inputs:
+        raise RuntimeError(f"Flow {step.label} has no recognised asset-input role")
+
+    # Drive URL (optional)
+    if uuid := role_uuid(step, "drive_url"):
+        inputs[uuid] = drive_urls[step.label]   # plain string value
+
+    # Auto-fill simple text roles from filename if present (default strategy)
+    if uuid := role_uuid(step, "products_names"):
+        inputs[uuid] = asset_name
+    if uuid := role_uuid(step, "asset_name"):
+        inputs[uuid] = asset_name
+
     return {"inputs": inputs}
 
-variations = [build_variation(aid, step) for aid in inputs_for_this_step]
+variations = [build_variation(aid, name, step) for (aid, name) in inputs_for_this_step]
 ```
+
+**Locked inputs** are never added to `inputs` (they're handled agent-side via `flows[step.label].locked_inputs` only as documentation).
+
+**For pipelines needing custom variation strategies** (e.g., template + multiple packshots with combinations, like Zelesta clone-ads or fashion-multi-pack) : write a `build_rows.py` helper alongside this `SKILL.md` and import/call it from this phase. The default single-asset strategy above stays as fallback.
 
 **Preview + hand validation (MANDATORY):**
 

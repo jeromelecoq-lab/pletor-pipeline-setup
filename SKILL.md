@@ -10,7 +10,7 @@ description: |
   skill", "scaffold a pletor pipeline", "bootstrap pletor", "configure pletor for
   Claude Code", "build me a pletor pipeline", or any close variation. Optionally
   publishes the generated skill to GitHub as a final step.
-tools: Bash, Read, Write, Edit, AskUserQuestion
+tools: Bash, Read, Write, Edit, AskUserQuestion, mcp__claude_ai_Pletor__execute
 ---
 
 # pletor-pipeline-setup — wizard for new Pletor pipeline skills
@@ -61,16 +61,31 @@ If any prerequisite is missing, print the install command (e.g. `brew install rc
 
 ### Phase 1 — Ask: API key handling
 
+**Before asking** : probe candidate existing env files with `find ~ -maxdepth 4 -name "*.env" -type f 2>/dev/null | xargs grep -l "^PLETOR_API_KEY=" 2>/dev/null | head -5`. If hits exist, surface them as concrete options (instead of the abstract "Existing file" choice).
+
 Use `AskUserQuestion`:
 
 1. **Question 1 — env file location**:
-   - "New file at ~/.pletor.env (recommended)"
-   - "Existing file (I'll specify the path)"
+   - For each detected env containing `PLETOR_API_KEY=`, one option per path (e.g. "`/Users/j/Brain/00_Clients/.env` (detected)")
+   - "New file at ~/.pletor.env (will be created)"
+   - "Existing file at a path I'll type" (free-text follow-up)
    - "Skip — I'll set it up manually later"
 
-2. **Question 2 — API key value** (only if env-file path was provided):
+2. **Question 2 — API key value** (only if env-file path was provided AND the file does NOT already contain `PLETOR_API_KEY=`):
    - "Paste it now (I'll write it with `umask 077` so it's mode 600)"
    - "Skip — I'll add it manually"
+
+**Validation after user picks a path** (CRITICAL — catches the #1 wizard bug : pointing to a non-existent env file) :
+
+```bash
+ENV_FILE_PATH="<user answer>"
+ENV_FILE_PATH="${ENV_FILE_PATH/#~/$HOME}"   # expand ~ to absolute
+if [ "$EXISTING_PATH_CHOICE" = "true" ]; then
+  test -f "$ENV_FILE_PATH" || { echo "⚠️  env file not found at $ENV_FILE_PATH"; AskUserQuestion to re-pick or continue without; }
+  grep -q "^PLETOR_API_KEY=" "$ENV_FILE_PATH" \
+    || echo "⚠️  $ENV_FILE_PATH exists but has no PLETOR_API_KEY= line — generated skill will fail Phase 0 preflight until you add it"
+fi
+```
 
 If the user picks "Paste it now", AskUserQuestion with a free-text answer for the key (note: AskUserQuestion shows the answer in the conversation — warn the user that they can also pick "Skip" and add it manually after).
 
@@ -118,9 +133,11 @@ If "3 or more", follow up with `AskUserQuestion` free-text: "How many flows? (2�
 
 Set `N_FLOWS` accordingly.
 
-### Phase 4 — For each flow, ask details
+### Phase 4 — For each flow, ask details + discover input shape
 
-Loop `k = 1..N_FLOWS`. Per iteration, one `AskUserQuestion` round with two questions:
+Loop `k = 1..N_FLOWS`. Per iteration :
+
+**Step 4a — Capture flow_id + label** (one `AskUserQuestion` round) :
 
 1. **Question 1 — flow ID for step k**: free-text. Validate the format:
    ```python
@@ -130,22 +147,85 @@ Loop `k = 1..N_FLOWS`. Per iteration, one `AskUserQuestion` round with two quest
    ```
    If invalid, re-ask until valid.
 
-2. **Question 2 — short label for step k**: free-text, default `step{k}`. Sanitize same as pipeline name. Examples to suggest: `static`, `video`, `upscale`, `inpaint`, `mask`.
+2. **Question 2 — short label for step k**: free-text, default `step{k}`. Sanitize same as pipeline name. Examples to suggest: `static`, `video`, `upscale`, `inpaint`, `mask`, `clone-ads`, `localizer`.
 
-After all flows captured, **summarize back** to the user as a markdown table and confirm with one final `AskUserQuestion`:
+**Step 4b — Discover flow shape via MCP** (CRITICAL : prevents the "Phase 0 fails because the SKILL.md hardcoded 1 image_input" bug — many Pletor flows have multiple unlocked inputs and the scaffold must capture them all at setup time, not at runtime) :
+
+Call `mcp__claude_ai_Pletor__execute` with `operation: get_workflow_definition`, `params: {id: <flow_id>}`. Parse the returned `dsl` text to extract every node :
+- For each line `**<node_name>** (<node_type>) [id=<uuid>]: <label>`, capture `{uuid, name, node_type, label}`.
+- Categorise nodes by type :
+  - `image_input` → asset role candidates (winning_ad, packshot, reference, logo, etc.)
+  - `text_input` → text role candidates (drive_url, products_names, prompt, target_languages, etc.)
+  - `brand_system_input` → typically locked (brand_context)
+  - Other node types (image_generation, llm, rename_asset, googledrive_upload_file) → ignore
+
+- Identify locked inputs : the wizard's heuristic is "any input named `logo`, `brand_colors`, `brand_context`, or `visual_references` is locked by default; the user can override". Locked inputs are stored separately and **never** included in batch payloads.
+
+**Step 4c — Assign a role per unlocked input** (one `AskUserQuestion` per input, with options) :
+
+For each unlocked input from step 4b, ask the user to map it to a known role. Predefined role enum (with hints):
+
+| Role | Type | Description |
+|---|---|---|
+| `winning_ad_template` | image_input | The reference ad to clone (used by clone-ads workflows) |
+| `packshot` | image_input | The product asset to insert (Zelesta clone-ads, fashion static) |
+| `reference_image` | image_input | A reference image (style, mood) |
+| `source_video` / `source_image` | image_input | A previous step's output (chained pipelines) |
+| `drive_url` | text_input | Drive folder URL where the workflow exports its output |
+| `products_names` | text_input | Product names/labels passed as context to the LLM |
+| `target_languages` | text_input | Languages to translate to (localizer workflows) |
+| `prompt` | text_input | Free-text prompt or instruction |
+| `asset_name` | text_input | Filename hint for the output |
+| `brand_context` | brand_system_input | Brand profile (almost always LOCKED) |
+| `logo` / `brand_colors` | image_input | Brand assets (almost always LOCKED) |
+| `LOCKED` | any | "Don't include this input in payloads — it's pre-set on the agent" |
+| `other` | any | Free-text label (escape hatch for unusual flows) |
+
+`AskUserQuestion` per input. Pre-select `LOCKED` for inputs whose name matches the locked heuristic. The user confirms or overrides.
+
+**Step 4d — Build the per-flow shape dict** :
+
+```python
+flow_shape = {
+    "flow_id": "<uuid>",
+    "label": "<sanitized>",
+    "name": "<workflow name from dsl>",
+    "inputs": {
+        # role → {id, node_type}
+        "winning_ad_template": {"id": "...", "node_type": "image_input"},
+        "packshot":            {"id": "...", "node_type": "image_input"},
+        "products_names":      {"id": "...", "node_type": "text_input"},
+        "drive_url":           {"id": "...", "node_type": "text_input"},
+    },
+    "locked_inputs": [
+        {"id": "...", "label": "Logo",          "node_type": "image_input"},
+        {"id": "...", "label": "Brand Colors",  "node_type": "image_input"},
+        {"id": "...", "label": "Brand context", "node_type": "brand_system_input"},
+    ],
+    "discovered_at": "<ISO-8601 UTC>",
+}
+```
+
+Store in a dict keyed by label, written to `flows.json` in Phase 7.
+
+**After all flows captured**, summarise back to the user as a markdown table (one row per flow with all detected roles) and confirm with one final `AskUserQuestion` :
 
 ```
 Here's your pipeline:
 
-| step | label   | flow_id                              |
-|------|---------|--------------------------------------|
-| 1    | static  | aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb |
-| 2    | video   | cccccccc-4444-5555-6666-dddddddddddd |
+| step | label    | flow_id      | roles                                              | locked              |
+|------|----------|--------------|----------------------------------------------------|---------------------|
+| 1    | static   | aaaaaaaa-... | packshot, drive_url                                | visual_examples     |
+| 2    | localize | cccccccc-... | source_image, target_languages, drive_url, prompt  | brand_context, logo |
 
 Confirm? (Yes / Restart / Cancel)
 ```
 
 On `Restart`, loop back to Phase 2. On `Cancel`, exit with no side effects.
+
+**Failure modes during step 4b** :
+- If MCP `get_workflow_definition` errors (invalid flow_id, no MCP access) → AskUserQuestion : "Skip discovery and proceed with stub flows.json ?" (user fills it later) / "Re-enter flow_id" / "Cancel".
+- If the parsed dsl has zero `image_input` → warn (most pipelines have at least one input asset).
 
 ### Phase 5 — Ask: Google Drive integration (optional, per-flow)
 
@@ -228,7 +308,36 @@ On Yes:
    - `drive_root_id`, `rclone_remote`, `project_dir`, `env_file` from the answers
    - `poll_tick_seconds: 5`, `input_extensions: [".png", ".jpg", ".jpeg", ".webp"]`
 
+   **Substitution placeholders in `config.example.json.tmpl`** :
+   - `{{PIPELINE_NAME}}` → sanitized name
+   - `{{FLOWS_ARRAY}}` → **the COMPLETE JSON array** including outer `[` and `]`, with each flow as a complete object `{...}`. Build via `json.dumps(flows_list, indent=2)` and inject as one substitution. **Never strip the outer `[]` or per-object `{}`** — the template uses `"flows": {{FLOWS_ARRAY}},` (no surrounding brackets in the template, the array is the whole value). Common bug : substituting bare key:value pairs without `{}` produces invalid JSON.
+   - `{{DRIVE_ROOT_ID}}`, `{{RCLONE_REMOTE}}`, `{{PROJECT_DIR}}`, `{{ENV_FILE}}` → string values (the wizard handles quoting in the template via `"…"`)
+
+   After rendering, **validate the output** : `python3 -c "import json; json.load(open(path))"` on both config.json and config.example.json. If either fails, STOP — the substitution is bugged.
+
 5. **Render `templates/README.md.tmpl` → `$SKILL_TARGET/README.md`** with the same substitutions as SKILL.md.
+
+5b. **Write `flows.json`** at `$SKILL_TARGET/flows.json` with the rich shape captured in Phase 4 (one entry per flow, keyed by label). Schema :
+
+   ```json
+   {
+     "<label>": {
+       "flow_id": "<uuid>",
+       "name": "<workflow name from MCP discovery>",
+       "inputs": {
+         "<role>": {"id": "<uuid>", "node_type": "image_input | text_input | brand_system_input"}
+       },
+       "locked_inputs": [
+         {"id": "<uuid>", "label": "<name>", "node_type": "<type>"}
+       ],
+       "discovered_at": "<ISO-8601 UTC>"
+     }
+   }
+   ```
+
+   The generated `SKILL.md` reads this file in its own Phase 1 instead of doing brittle runtime discovery. If a future flow update adds/changes inputs, the user re-runs the wizard with `--refresh-flow <label>` (TODO) OR the generated skill exposes a `--refresh-flows` flag that calls MCP again to update flows.json in place.
+
+   Validate the written JSON : `python3 -c "import json; json.load(open(path))"`. If invalid, STOP.
 
 6. **Write a `.gitignore`** at `$SKILL_TARGET/.gitignore`:
    ```
