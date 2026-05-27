@@ -66,6 +66,15 @@ If your pipeline is a DAG with forks/joins, this scaffold doesn't cover it — e
 - "bootstrap pletor for Claude Code"
 - "build me a pletor pipeline"
 
+## Companion skill: `pletor-api`
+
+This wizard generates skills that use **MCP `prepare_batch`** (draft + review URL in the Pletor UI). The companion **`pletor-api`** skill is the canonical reference for Pletor's **REST API** — `POST /assets/upload/`, `POST /runs/`, polling, asset download. Drop both into `~/.claude/skills/` so Claude has both paradigms in context:
+
+- **`pletor-api`** — REST contract authority. Used by `upload.py` (asset upload) and any REST-direct extension you write. Get it at https://docs.pletor.ai/automate/api-integrations#agent-skills
+- **`pletor-pipeline-setup`** (this skill) — orchestrates MCP `prepare_batch` with mandatory Yes/No review.
+
+The two skills don't conflict — they cover different paradigms. The wizard checks for `pletor-api` in its prereq probe and gently recommends installing it if missing.
+
 ## License
 
 MIT.

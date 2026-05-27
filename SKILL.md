@@ -55,6 +55,7 @@ Then probe each prerequisite and print ✓/✗:
 | rclone remotes | `rclone listremotes` | At least one remote (Drive) configured |
 | jq | `command -v jq` | JSON parser for rclone output |
 | Python 3 | `command -v python3 && python3 -c "import requests" 2>/dev/null` | Python + requests library available |
+| `pletor-api` skill | `test -f ~/.claude/skills/pletor-api/SKILL.md` | Companion REST-API reference (recommended) — get it at https://docs.pletor.ai/automate/api-integrations#agent-skills |
 
 If any prerequisite is missing, print the install command (e.g. `brew install rclone jq`, `pip install requests`) but **do not stop** — let the user continue if they want to fix it later.
 
@@ -313,3 +314,12 @@ If "Publish":
 | Templates missing in `$SKILL_DIR/templates/` | STOP — bootstrap is misinstalled |
 | `gh auth status` fails | Skip publish, instruct user to run `gh auth login` |
 | User says Cancel at any prompt | Exit cleanly. No partial files written. |
+
+## Related skill
+
+**`pletor-api`** — the canonical reference for Pletor's REST API (auth via `X-Api-Key`, `POST /assets/upload/`, `POST /runs/`, polling, asset download). Install it alongside this wizard so Claude has the authoritative wire contract when writing or debugging code that touches the REST API (notably `upload.py`, or any future REST-direct alternative to `prepare_batch`):
+
+- Official source: https://docs.pletor.ai/automate/api-integrations#agent-skills
+- Drop the file at `~/.claude/skills/pletor-api/SKILL.md` and restart Claude Code.
+
+If the user already has it installed, do nothing. If not, mention it at Phase 0 when prereqs are checked.

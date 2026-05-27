@@ -60,6 +60,17 @@ If your Pletor flow definitions change (you add/remove inputs in the Pletor UI),
 
 To change the pipeline shape (add a step, swap a flow), edit `config.json` directly, or re-run `pletor-pipeline-setup` and overwrite this skill.
 
+## Companion skill: `pletor-api`
+
+For best results, install the **`pletor-api`** Claude Code skill alongside this one — it's the canonical reference for Pletor's REST API. Drop it at `~/.claude/skills/pletor-api/SKILL.md`. Get it from https://docs.pletor.ai/automate/api-integrations#agent-skills
+
+It's used implicitly when:
+- Debugging or extending `upload.py` (asset upload via REST)
+- Writing any REST-direct alternative (bypassing the `prepare_batch` review flow)
+- Handling Pletor error codes, retries, rate limits
+
+This skill doesn't require it — but Claude is more reliable about REST details when both skills are loaded.
+
 ## License
 
 MIT.
