@@ -1,0 +1,18 @@
+# Anything a generated skill might write back into this folder (defensive — shouldn't happen)
+flows.json
+config.json
+asset_map.json
+*.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
