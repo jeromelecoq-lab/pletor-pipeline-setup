@@ -1,4 +1,4 @@
-# pletor-claude-code-setup
+# pletor-pipeline-setup
 
 A [Claude Code](https://claude.com/claude-code) skill that scaffolds **other** Pletor pipeline skills. Run it once per pipeline you want to build, answer a few questions, and you get a complete, self-contained pipeline skill ready to use.
 
